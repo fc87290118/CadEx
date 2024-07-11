@@ -1,0 +1,117 @@
+## Mount the GOTerm into 
+## import the H. armigera GOterm 
+## "12915_2017_402_MOESM2_ESM.xlsx" file is from Pearce et al.(2017)
+library(readxl)
+HaGO <- read_excel("12915_2017_402_MOESM2_ESM.xlsx", sheet = 1, col_names = c("ID", "GOTerm"))
+
+# how many ids are there?
+length(unique(HaGO$ID))
+
+# how many IDs have an empty GO term row
+# 5773 rows of empty GOTerm value
+dim(HaGO[is.na(HaGO$GOTerm), ])
+
+## Check another way, NA counting can be tricky
+## Make the long dataframe wide, now each row is a gene and each column is a GOTerm
+## Similar things we did when we deal with the bioassay data
+temp_df <- 
+  HaGO
+temp_df$GOTerm <- replace_na(temp_df$GOTerm, replace = "NotAssigned")
+temp_df_wide <- temp_df %>%
+  pivot_wider(names_from = GOTerm, values_from = GOTerm)
+## Check the dimensions of the new pivot_wide table
+## 17089 HaOG IDs
+dim(temp_df_wide)
+
+## Check the length of the "NotAssigned" GO term column, should be all of the genes
+total_genes <- length(temp_df_wide$NotAssigned)
+total_genes
+
+## count the number of "NotAssigned" string which were previously NAs
+## this is a checking step to see if the NA count previously matched the current NotAssigned values, 5773 NotAssigned value
+total_missing <- sum(str_count(temp_df_wide$NotAssigned, "NotAssigned"), na.rm = TRUE)
+proportionMissing <- total_missing/total_genes
+
+## check for any weirdly formatted IDs
+paper_refGOTerms_extra <- HaGO %>%
+  separate(ID, into = c("ID_source","ID_info"), sep = 4, remove = F) # sep = 4 splits it after 4 characters
+## count the number of things
+table(paper_refGOTerms_extra$ID_source)
+
+## Combining these GO terms to the AnnotationHub table
+## query about the armigera information from AH
+query(hub, c("orgdb", "armigera"))
+orgdb <- hub[["AH97282"]]
+
+## BE AWARE database are special types of tables, so usual command for tables wouldnt work for database
+## They are very efficient at storage, but you can't easily look at the whole table
+## You have to provide keys from which results will be returned
+## Look at some of the keys that we can use to access the database
+## keytypes are usually used with keys
+keytypes(orgdb)
+
+## to call and check what elements are stored under each keytype, we can use a for loop
+for (i in keytypes(orgdb)) {
+  print("--------")
+  print("check this keytypes")
+  print(i)
+  egid <- tail(head(keys(orgdb, i), n=50),n=10)
+  print(egid)
+  print(length(keys(orgdb, i)))
+}
+
+## let's see if we can view it in a table version. more handy that way
+## We wan the "symbol" keytype which looked like has the LOC ID
+## use the symbol keytype to explore the columns
+key_list <- keys(orgdb, "SYMBOL")
+columns(orgdb)
+
+allData <- select(orgdb, key_list, columns(orgdb), "SYMBOL")
+## select() returns mappings between keys and columns 
+
+## The "ALIAS" column here looks useful too! contains the HaOG terms
+allData_extra <- allData %>%
+  separate(ALIAS, into = c("ID_source", "ID_info"), sep = 4, remove = F)
+sort(table(allData_extra$ID_source))
+
+## The HaOG and LOC1 make up the majority of the occurrence in that column, but there are also a lot of duplications of the LOC IDs from the symbol column
+## make a table with a column for each LOC and then another column containing the LOC and sometimes the HaOG ID that we want
+## We want to keep only rows with the HaOG first and see if it's a 1-on-1 match between the LOCs and HaOGs
+detach("package:AnnotationHub", unload = TRUE)
+allData_extra_slim <- allData_extra[allData_extra$ID_source == "HaOG", ]
+
+#A sorted list looking at how many LOCs map to HaOG
+LOCGroup <- as_tibble(allData_extra_slim) %>%
+  dplyr::select(SYMBOL, ALIAS) %>%
+  dplyr::distinct(SYMBOL, ALIAS, .keep_all = TRUE) %>%
+  dplyr::group_by(SYMBOL) %>%
+  dplyr::summarise(count = n()) %>%
+  dplyr::arrange(-count)
+
+ggplot(LOCGroup, aes(x=count)) + 
+  geom_histogram()
+
+## A sorted list looking at how many HaOG map to a LOC
+ALIASGroup <- as_tibble(allData_extra_slim) %>%
+  dplyr::select(SYMBOL, ALIAS) %>%
+  dplyr::distinct(SYMBOL, ALIAS, .keep_all = TRUE) %>%
+  dplyr::group_by(ALIAS) %>%
+  dplyr::summarise(count= n()) %>%
+  dplyr::arrange(-count)
+
+ggplot(ALIASGroup, aes(x=count)) +
+  geom_histogram()
+
+## Compare the two histograms, from group by SYMBOL and group by ALIAS, we can see very small amount of HaOGs match to more than 1 LOC, it's ok
+## perform the linking then write it to a CSV
+paper_refGOTerms_extra # it is good it's in a long format
+
+## AnnotationHub results in LONG format, which matches
+clean <- as_tibble(allData_extra_slim) %>% 
+  dplyr::distinct(SYMBOL, ALIAS, .keep_all = TRUE)
+  cleanGOAdded <- merge(clean, paper_refGOTerms_extra, by.x = "ALIAS", by.y = "ID", all = T,
+                           suffixed = c("AnnotHub", "Paper")) 
+cleanGOAdded  
+## the final file is added as supplementary material
+write.csv(cleanGOAdded, "/scratch1/fan048/Rstudio/GO/CleanGOAdded.csv")
+
